@@ -1,0 +1,313 @@
+// ============================================================================
+// Print Shop Production Management System — Prisma Schema
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ----------------------------------------------------------------------------
+// ENUMS
+// ----------------------------------------------------------------------------
+
+enum Role {
+  admin
+  reception
+  designer
+  ctp
+  printer
+  cutter
+  carton_factory
+  quality
+  production_manager
+}
+
+enum OrderStatus {
+  draft
+  new
+  in_design
+  ready_for_ctp
+  in_ctp
+  ready_for_cutting
+  in_cutting
+  ready_for_printing
+  in_printing
+  ready_for_manufacturing
+  in_manufacturing
+  pending_quality
+  completed
+  delivered
+  cancelled
+}
+
+enum ManufacturingSubStage {
+  none
+  diecut
+  folding
+  gluing
+  done
+}
+
+enum Priority {
+  normal // عادي
+  urgent // مستعجل
+  vip // VIP
+}
+
+enum ProductType {
+  printed_sheet // ورقة مطبوعة
+  invoice_book // فاتورة / نوتة
+  flyer // فلاير
+  brochure_catalog // بروشور / كاتالوج
+  carton_box // كرتونة / علبة
+  box_3d // بوكس ثلاثي الأبعاد
+  other
+}
+
+enum SizeType {
+  standard
+  custom
+}
+
+enum Sides {
+  one_side
+  two_sides
+}
+
+enum QualityDecision {
+  approved
+  rejected
+}
+
+enum FileVisibility {
+  everyone // everyone involved in the order (creator + anyone who has acted on it)
+  roles // restricted to specific roles
+  user // restricted to a specific user
+}
+
+// ----------------------------------------------------------------------------
+// CORE ENTITIES
+// ----------------------------------------------------------------------------
+
+model Branch {
+  // Multi-branch support (future-proofing — see SCALABILITY_PLAN.md)
+  id        String   @id @default(uuid())
+  name      String
+  code      String   @unique
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  users  User[]
+  orders Order[]
+
+  @@map("branches")
+}
+
+model User {
+  id           String   @id @default(uuid())
+  name         String
+  email        String   @unique
+  phone        String?
+  passwordHash String
+  role         Role
+  isActive     Boolean  @default(true)
+  avatarUrl    String?
+  branchId     String?
+  branch       Branch?  @relation(fields: [branchId], references: [id])
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  deletedAt    DateTime? // soft delete
+
+  ordersCreated       Order[]            @relation("OrderCreatedBy")
+  stageHistoryEntries OrderStageHistory[] @relation("StageActor")
+  uploadedFiles       OrderFile[]        @relation("FileUploadedBy")
+  assignedOrders      OrderAssignment[]
+  notifications       Notification[]
+
+  @@index([role])
+  @@index([branchId])
+  @@map("users")
+}
+
+model Order {
+  id                 String      @id @default(uuid())
+  orderNumber        String      @unique // human-friendly sequential/branch-prefixed number
+  branchId           String?
+  branch             Branch?     @relation(fields: [branchId], references: [id])
+
+  // Section 1: Client Information
+  clientName         String
+  clientPhone        String
+  clientCompany      String?
+  deliveryAddress    String?
+  internalReference  String?
+
+  // Section 2: Product Type
+  productType        ProductType
+
+  // Section 3: Dimensions
+  sizeType           SizeType
+  standardSize       String?
+  customWidthCm      Decimal?    @db.Decimal(8, 2)
+  customHeightCm     Decimal?    @db.Decimal(8, 2)
+  is3d               Boolean     @default(false)
+  depthCm            Decimal?    @db.Decimal(8, 2)
+  closingType        String?
+  needsCutting       Boolean     @default(false) // paper cutting BEFORE printing (e.g. custom sheet size)
+
+  // Section 4: Print Specifications
+  colorsCount        String      // "1" | "2" | "4" | "5" | "6+"
+  sides              Sides
+  paperType          String
+  printQuantity      Int
+  specialFinishes    String[]    // multi-select stored as array
+  estimatedPlates    Int         // calculated: colorsCount * (sides == two_sides ? 2 : 1)
+
+  // Section 5: Carton / Manufacturing (nullable — only for carton/box products)
+  needsDiecut        Boolean     @default(false)
+  diecutNotes        String?
+  needsFolding       Boolean     @default(false)
+  needsGluing        Boolean     @default(false)
+  glueType           String?
+  finalQuantity      Int?
+  packagingNotes     String?
+  manufacturingSubStage ManufacturingSubStage @default(none)
+
+  // Section 6: Files & Meta
+  clientNotes        String?
+  deadline           DateTime
+  priority            Priority    @default(normal)
+
+  // Workflow state
+  status             OrderStatus @default(new)
+  currentStageEnteredAt DateTime @default(now())
+  expectedDurationMin Int?       // expected minutes for CURRENT stage
+  printedQuantity    Int?        // actual printed qty entered by printer
+  wasteQuantity      Int?
+
+  // Quality
+  qualityDecision    QualityDecision?
+  qualityReason      String?
+
+  // Rejection at design intake (Designer Accept/Reject on a new order)
+  designRejectReason String?
+
+  // Restart / reprint
+  restartReason      String?
+  restartCount       Int         @default(0)
+
+  // Pricing (visible only to reception/admin — future scope, present now for extensibility)
+  price              Decimal?    @db.Decimal(10, 2)
+  isPriceVisible     Boolean     @default(false)
+
+  createdById        String
+  createdBy          User        @relation("OrderCreatedBy", fields: [createdById], references: [id])
+
+  createdAt          DateTime    @default(now())
+  updatedAt          DateTime    @updatedAt
+  deletedAt          DateTime?
+
+  files              OrderFile[]
+  stageHistory       OrderStageHistory[]
+  assignments        OrderAssignment[]
+  notifications      Notification[]
+
+  @@index([status])
+  @@index([priority])
+  @@index([deadline])
+  @@index([branchId])
+  @@index([createdById])
+  @@map("orders")
+}
+
+model OrderFile {
+  id           String   @id @default(uuid())
+  orderId      String
+  order        Order    @relation(fields: [orderId], references: [id])
+  uploadedById String
+  uploadedBy   User     @relation("FileUploadedBy", fields: [uploadedById], references: [id])
+  fileName     String
+  fileUrl      String   // abstraction: local path now, S3/MinIO key later
+  fileType     String   // "original" | "design_final" | "proof" | "photo" | "other"
+  sizeBytes    Int?
+
+  // Visibility control
+  visibility     FileVisibility @default(everyone)
+  visibleRoles   Role[]          // used when visibility = roles
+  visibleUserId  String?         // used when visibility = user
+
+  createdAt  DateTime @default(now())
+
+  @@index([orderId])
+  @@map("order_files")
+}
+
+// Full audit trail of every stage transition
+model OrderStageHistory {
+  id               String      @id @default(uuid())
+  orderId          String
+  order            Order       @relation(fields: [orderId], references: [id])
+  fromStatus       OrderStatus?
+  toStatus         OrderStatus
+  userId           String
+  user             User        @relation("StageActor", fields: [userId], references: [id])
+  note             String?
+  isReturn         Boolean     @default(false) // true when sent back to a previous stage
+  returnReason     String?
+  isRestart        Boolean     @default(false) // true when an admin/reception/PM restarted the order
+  expectedDurationMin Int?
+  actualDurationMin   Int?     // time spent in the FROM stage before this transition
+  isDelayed        Boolean     @default(false)
+  createdAt        DateTime    @default(now())
+
+  @@index([orderId])
+  @@index([userId])
+  @@index([toStatus])
+  @@map("order_stage_history")
+}
+
+// Explicit assignment (used by production_manager to assign/reassign tasks)
+model OrderAssignment {
+  id         String   @id @default(uuid())
+  orderId    String
+  order      Order    @relation(fields: [orderId], references: [id])
+  userId     String
+  user       User     @relation(fields: [userId], references: [id])
+  role       Role
+  assignedAt DateTime @default(now())
+  unassignedAt DateTime?
+
+  @@index([orderId])
+  @@index([userId])
+  @@map("order_assignments")
+}
+
+model Notification {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id])
+  orderId   String?
+  order     Order?   @relation(fields: [orderId], references: [id])
+  title     String
+  body      String
+  isRead    Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId, isRead])
+  @@map("notifications")
+}
+
+// Configurable time-estimation & machine-speed settings (admin-editable)
+model Setting {
+  id        String   @id @default(uuid())
+  key       String   @unique // e.g. "printing.machine_speed_sheets_per_hour"
+  value     String   // stored as string/JSON, parsed by lib/settings.ts
+  updatedAt DateTime @updatedAt
+
+  @@map("settings")
+}

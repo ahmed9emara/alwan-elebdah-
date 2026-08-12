@@ -1,0 +1,17 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url("https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700&display=swap");
+
+html {
+  font-family: "Tajawal", "Segoe UI", Tahoma, sans-serif;
+}
+
+body {
+  direction: rtl;
+}
+
+.input {
+  @apply w-full rounded-lg border border-neutral-300 px-3 py-2 text-right outline-none transition focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200;
+}
